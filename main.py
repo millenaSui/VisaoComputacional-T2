@@ -4,7 +4,7 @@ de imagens e processamento do tabuleiro de xadrez para calibração da câmera.
 """
 
 import os
-from src.images import format_images
+from src.images import format_images, find_chessboard_corners
 
 CHESSBOARD_SIZE = (9, 9) # Para o tabuleiro 10x10
 SQUARE_SIZE_MM = 25.0 # Tamanho do quadrado em milímetros
@@ -30,6 +30,16 @@ def main():
 
     if not formatted_images:
         print("ERRO: Nenhuma imagem pôde ser formatada.")
+        exit()
+
+    imgpoints, valid_images = find_chessboard_corners(
+        formatted_images,
+        CHESSBOARD_SIZE,
+        show_corners=False
+    )
+    
+    if not imgpoints:
+        print("[ERRO] Nenhum canto de tabuleiro foi detectado nas imagens fornecidas.")
         exit()
 
 if __name__ == "__main__":
