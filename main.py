@@ -7,7 +7,9 @@ import os
 from src.images import (
     format_images,
     find_chessboard_corners,
-    calibrate_camera
+    calibrate_camera,
+    remove_distortion,
+    run_projection_experiment
 )
 
 CHESSBOARD_SIZE = (9, 9) # Para o tabuleiro 10x10
@@ -48,8 +50,22 @@ def main():
         exit()
 
     # calibração de câmera e cálculo do erro reprojeção
-    calibrate_camera(
+    camera_matrix, dist_coeffs, rvecs, tvecs, ret = calibrate_camera(
         imgpoints, CHESSBOARD_SIZE, SQUARE_SIZE_MM, img_size
+    )
+
+    # imagens sem distorção
+    undistorted_path = os.path.join(IMAGES_PATHS, "undistorted")
+    remove_distortion(
+        valid_images, camera_matrix, dist_coeffs, undistorted_path
+    )
+
+    # experimento de projeção de pontos 3D para 2D
+    experiments_path = os.path.join(IMAGES_PATHS, "experiment")
+    results = run_projection_experiment(
+        valid_images, imgpoints, camera_matrix, dist_coeffs,
+        rvecs, tvecs, CHESSBOARD_SIZE, SQUARE_SIZE_MM,
+        experiments_path
     )
 
 if __name__ == "__main__":

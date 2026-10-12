@@ -137,10 +137,137 @@ def calibrate_camera(imgpoints, chessboard_size, square_size_mm, image_size):
     print("[INFO] Calculando matrizes de calibração...")
 
     # algoritmo de otimização
-    camera_matrix, dist_coeffs = cv2.calibrateCamera(
+    ret, camera_matrix, dist_coeffs, rvecs, tvecs = cv2.calibrateCamera(
         objpoints, imgpoints, image_size, None, None
     )
 
     print("[INFO] Calibração concluída com sucesso!")
     print(f"[INFO] Matriz Intrínseca (K):\n{camera_matrix}")
     print(f"[INFO] Coeficientes de Distorção:\n{dist_coeffs.ravel()}")
+
+    return camera_matrix, dist_coeffs, rvecs, tvecs, ret
+
+
+
+def remove_distortion(formatted_images, camera_matrix, dist_coeffs, undistorted_dir):
+    """
+    Aplica a correção de distorção radial e tangencial nas imagens
+    e salva os resultados individuais e comparativos lado a lado.
+
+    :param formatted_images: Lista de tuplas (caminho_da_imagem, imagem_grayscale, imagem_original_bgr).
+    :param camera_matrix: Matriz intrínseca 3x3 da câmera (K).
+    :param dist_coeffs: Vetor de coeficientes de distorção da lente.
+    :param output_dir: Diretório onde as imagens processadas serão salvas.
+
+    :return undistorted_images: Lista de tuplas (caminho_original, imagem_corrigida_bgr).
+    """
+    if undistorted_dir and not os.path.exists(undistorted_dir):
+        os.makedirs(undistorted_dir)
+        print(f"[INFO] Diretório '{undistorted_dir}' criado para armazenar as imagens corrigidas.")
+
+    undistorted_images = []
+    total_images = len(formatted_images)
+
+    print(f"[INFO] Iniciando remoção de distorção em {total_images} imagens...")
+
+    h, w = formatted_images[0][1].shape[:2] # dimensoes da imagem
+    image_size = (w, h)
+    new_camera_matrix, _ = cv2.getOptimalNewCameraMatrix(
+        camera_matrix, dist_coeffs, image_size, alpha=1, newImgSize=image_size
+    )
+
+    for fname, _, img_bgr in formatted_images:
+        # remoção da distorção
+        undistorted_bgr = cv2.undistort(
+            img_bgr, camera_matrix, dist_coeffs, None, new_camera_matrix
+        )
+
+        undistorted_images.append((fname, undistorted_bgr))
+
+        if undistorted_dir:
+            base_name = os.path.basename(fname)
+            name_no_ext, ext = os.path.splitext(base_name)
+
+            # salva a comparação de imagens lado a lado
+            comparison = np.hstack((img_bgr, undistorted_bgr))
+            cv2.putText(comparison, "Original (Com Distorcao)", (20, 40),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 2, cv2.LINE_AA)
+            cv2.putText(comparison, "Corrigida (Sem Distorcao)", (w + 20, 40),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2, cv2.LINE_AA)
+
+            out_path_comp = os.path.join(undistorted_dir, f"{name_no_ext}_comparison{ext}")
+            cv2.imwrite(out_path_comp, comparison)
+
+    print(f"[INFO] Remoção de distorção concluída: {len(undistorted_images)} imagens salvas em '{undistorted_dir}'.\n")
+    return undistorted_images
+
+
+def run_projection_experiment(valid_images, imgpoints, camera_matrix, dist_coeffs, 
+                              rvecs, tvecs, chessboard_size, square_size_mm, 
+                              output_dir='images/experiment'):
+    """
+    Executa o experimento de projeção perspectiva 3D -> 2D para validar a calibração.
+
+    :param valid_images: Lista de tuplas (caminho_da_imagem, imagem_grayscale, imagem_original_bgr).
+    :param imgpoints: Lista com os arrays de pontos 2D (subpixel) detectados.
+    :param camera_matrix: Matriz intrínseca 3x3 da câmera (K).
+    :param dist_coeffs: Vetor de coeficientes de distorção.
+    :param rvecs: Vetores de rotação da calibração.
+    :param tvecs: Vetores de translação da calibração.
+    :param chessboard_size: Tupla (colunas, linhas) de cantos internos.
+    :param square_size_mm: Tamanho do quadrado do tabuleiro em mm.
+    :param output_dir: Diretório para salvar as imagens do experimento.
+
+    :return experiment_results: Lista de dicionários com estatísticas de erro por imagem.
+    """
+    if output_dir and not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+        print(f"[INFO] Diretório '{output_dir}' criado para o experimento de projeção.")
+
+    # define os pontos 3D do tabuleiro (plano Z=0)
+    cols, rows = chessboard_size
+    objp = np.zeros((cols * rows, 3), np.float32)
+    objp[:, :2] = np.mgrid[0:cols, 0:rows].T.reshape(-1, 2) * square_size_mm
+
+    experiment_results = []
+    print(f"[INFO] Iniciando experimento 3D -> 2D em {len(valid_images)} imagens...")
+
+    for i, (fname, _, img_bgr) in enumerate(valid_images):
+        # projeção 2D pra 3D
+        projected_imgpoints, _ = cv2.projectPoints(
+            objp, rvecs[i], tvecs[i], camera_matrix, dist_coeffs
+        )
+
+        detected_pts = imgpoints[i].reshape(-1, 2)
+        projected_pts = projected_imgpoints.reshape(-1, 2)
+
+        # cálculo do erro em pixels
+        errors = np.linalg.norm(detected_pts - projected_pts, axis=1)
+        mean_error = np.mean(errors)
+        max_error = np.max(errors)
+
+        experiment_results.append({
+            'image_path': fname,
+            'mean_error_px': mean_error,
+            'max_error_px': max_error,
+            'projected_pts': projected_pts,
+            'detected_pts': detected_pts
+        })
+
+        # gera imagem anotada para o relatório
+        if output_dir:
+            img_annotated = img_bgr.copy()
+            for det, proj in zip(detected_pts, projected_pts):
+                cv2.circle(img_annotated, (int(det[0]), int(det[1])), 4, (0, 0, 255), -1) # ponto detectado círculo
+                cv2.drawMarker(img_annotated, (int(proj[0]), int(proj[1])), (0, 255, 0), # ponto projetado cruz
+                               markerType=cv2.MARKER_CROSS, markerSize=8, thickness=1)
+
+            base_name = os.path.basename(fname)
+            out_path = os.path.join(output_dir, f"proj_{base_name}")
+            cv2.imwrite(out_path, img_annotated)
+
+    avg_all_images = np.mean([r['mean_error_px'] for r in experiment_results])
+    print(f"[INFO] Experimento concluído! Erro médio de projeção global: {avg_all_images:.4f} pixels.")
+    print(f"[INFO] Imagens com marcas salvas em '{output_dir}'.\n")
+
+    return experiment_results
